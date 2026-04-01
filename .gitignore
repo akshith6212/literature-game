@@ -26,3 +26,11 @@ yarn-error.log*
 
 # Environment files (local configs)
 /.env.*
+
+# npm modules
+node_modules/
+
+# claude settings and data
+.claude/
+
+.DS_Store
