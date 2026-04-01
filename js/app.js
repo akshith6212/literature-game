@@ -7,7 +7,7 @@ import {
   dealCards, validateAsk, processAsk,
   validateClaim, processClaim,
   getAvailableHalfSuitsForClaim, isGameOver, getWinner,
-  generateRoomCode, generatePlayerId, arrangePlayerOrder,
+  generateRoomCode, arrangePlayerOrder,
 } from './engine.js';
 
 // ===== FIREBASE SETUP =====
@@ -15,19 +15,27 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/fireba
 import {
   getDatabase, ref, set, get, update, onValue, push, serverTimestamp, off,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
+import {
+  getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut,
+} from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 
 const firebaseApp = initializeApp(FIREBASE_CONFIG);
 const db = getDatabase(firebaseApp);
+const auth = getAuth(firebaseApp);
+const googleProvider = new GoogleAuthProvider();
 
 // ===== APP STATE =====
-let myPlayerId = sessionStorage.getItem('litGamePlayerId') || null;
-let myName = sessionStorage.getItem('litGamePlayerName') || '';
+let myPlayerId = null;
+let myName = '';
 let currentRoomCode = null;
 let gameStateListener = null;
+let handsListener = null;
 let gameState = null;
+let gameHands = {};
 
 // ===== DOM REFS =====
 const screens = {
+  auth: document.getElementById('screen-auth'),
   home: document.getElementById('screen-home'),
   lobby: document.getElementById('screen-lobby'),
   game: document.getElementById('screen-game'),
@@ -59,16 +67,22 @@ function formatTime() {
   return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// Merges private hand data into a local copy of gameState for engine functions
+function getStateWithHands() {
+  const state = JSON.parse(JSON.stringify(gameState));
+  for (const [uid, hand] of Object.entries(gameHands)) {
+    if (state.players[uid]) state.players[uid].hand = hand;
+  }
+  return state;
+}
+
 // ===== HOME SCREEN =====
 document.getElementById('btn-create-game').addEventListener('click', async () => {
   const name = document.getElementById('input-name').value.trim();
   if (!name) return showToast('Please enter your name', 'error');
 
   const code = generateRoomCode();
-  myPlayerId = generatePlayerId();
   myName = name;
-  sessionStorage.setItem('litGamePlayerId', myPlayerId);
-  sessionStorage.setItem('litGamePlayerName', name);
 
   const roomRef = ref(db, `games/${code}`);
   await set(roomRef, {
@@ -76,7 +90,7 @@ document.getElementById('btn-create-game').addEventListener('click', async () =>
     hostId: myPlayerId,
     createdAt: serverTimestamp(),
     players: {
-      [myPlayerId]: { name, team: 0, hand: [], cardCount: 0, connected: true },
+      [myPlayerId]: { name, team: 0, cardCount: 0, connected: true },
     },
     playerOrder: [],
     currentTurn: null,
@@ -85,6 +99,7 @@ document.getElementById('btn-create-game').addEventListener('click', async () =>
     log: [],
   });
 
+  await set(ref(db, `users/${myPlayerId}/activeRoom`), code);
   currentRoomCode = code;
   joinRoom(code);
 });
@@ -95,10 +110,7 @@ document.getElementById('btn-join-game').addEventListener('click', async () => {
   if (!name) return showToast('Please enter your name', 'error');
   if (!code) return showToast('Please enter a room code', 'error');
 
-  myPlayerId = generatePlayerId();
   myName = name;
-  sessionStorage.setItem('litGamePlayerId', myPlayerId);
-  sessionStorage.setItem('litGamePlayerName', name);
 
   // Check room exists
   const snapshot = await get(ref(db, `games/${code}`));
@@ -117,9 +129,10 @@ document.getElementById('btn-join-game').addEventListener('click', async () => {
   const team = team0 <= team1 ? 0 : 1;
 
   await update(ref(db, `games/${code}/players/${myPlayerId}`), {
-    name, team, hand: [], cardCount: 0, connected: true,
+    name, team, cardCount: 0, connected: true,
   });
 
+  await set(ref(db, `users/${myPlayerId}/activeRoom`), code);
   currentRoomCode = code;
   joinRoom(code);
 });
@@ -127,6 +140,7 @@ document.getElementById('btn-join-game').addEventListener('click', async () => {
 // ===== JOIN ROOM (listen to state) =====
 function joinRoom(code) {
   if (gameStateListener) off(ref(db, `games/${code}`), 'value', gameStateListener);
+  if (handsListener) off(ref(db, `hands/${code}`), 'value', handsListener);
 
   gameStateListener = onValue(ref(db, `games/${code}`), snapshot => {
     if (!snapshot.exists()) return;
@@ -135,6 +149,13 @@ function joinRoom(code) {
     if (gameState.status === 'lobby') renderLobby(gameState);
     else if (gameState.status === 'playing') renderGame(gameState);
     else if (gameState.status === 'ended') renderEnded(gameState);
+  });
+
+  handsListener = onValue(ref(db, `hands/${code}`), snapshot => {
+    gameHands = snapshot.val() || {};
+    if (gameState?.status === 'playing') {
+      renderHandPanel();
+    }
   });
 }
 
@@ -201,26 +222,25 @@ document.getElementById('btn-start-game').addEventListener('click', async () => 
   const order = arrangePlayerOrder(players);
   const hands = dealCards(playerIds);
 
-  // Update player hands and card counts
-  const playerUpdates = {};
-  for (const pid of playerIds) {
-    playerUpdates[`players/${pid}/hand`] = hands[pid];
-    playerUpdates[`players/${pid}/cardCount`] = hands[pid].length;
-  }
-
-  await update(ref(db, `games/${currentRoomCode}`), {
-    ...playerUpdates,
-    playerOrder: order,
-    currentTurn: order[0],
-    status: 'playing',
-    scores: [0, 0],
-    claimedSets: {},
-    log: [{
+  const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+  const rootUpdates = {
+    [`games/${currentRoomCode}/playerOrder`]: order,
+    [`games/${currentRoomCode}/currentTurn`]: order[0],
+    [`games/${currentRoomCode}/status`]: 'playing',
+    [`games/${currentRoomCode}/scores`]: [0, 0],
+    [`games/${currentRoomCode}/claimedSets`]: {},
+    [`games/${currentRoomCode}/log/${logKey}`]: {
       type: 'system',
       text: 'Game started! ' + Object.values(players).map(p => p.name).join(', ') + ' are playing.',
       time: formatTime(),
-    }],
-  });
+    },
+  };
+  for (const pid of playerIds) {
+    rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = hands[pid].length;
+    rootUpdates[`hands/${currentRoomCode}/${pid}`] = hands[pid];
+  }
+
+  await update(ref(db, '/'), rootUpdates);
 });
 
 // ===== GAME SCREEN =====
@@ -247,7 +267,7 @@ function renderGame(state) {
   renderPlayersPanel(state);
 
   // Hand panel
-  renderHandPanel(state, me);
+  renderHandPanel();
 
   // Action bar
   renderActionBar(state, me, isMyTurn);
@@ -271,7 +291,7 @@ function renderPlayersPanel(state) {
       <div class="player-row ${isTurn ? 'is-turn' : ''} ${isMe ? 'is-you' : ''}">
         ${isTurn ? '<span class="turn-arrow">▶</span>' : ''}
         <span class="p-name">${escapeHtml(p.name)}${isMe ? ' (you)' : ''}</span>
-        <span class="p-cards">${p.cardCount ?? (p.hand || []).length}🃏</span>
+        <span class="p-cards">${p.cardCount ?? 0}🃏</span>
       </div>`;
   }).join('');
 
@@ -279,8 +299,8 @@ function renderPlayersPanel(state) {
   document.getElementById('game-team1-players').innerHTML = render(team1);
 }
 
-function renderHandPanel(state, me) {
-  const hand = me.hand || [];
+function renderHandPanel() {
+  const hand = gameHands[myPlayerId] || [];
   const container = document.getElementById('hand-container');
 
   if (hand.length === 0) {
@@ -324,13 +344,13 @@ function renderCard(card, options = {}) {
 function renderActionBar(state, me, isMyTurn) {
   const bar = document.getElementById('action-bar');
   if (isMyTurn) {
-    const availableHS = getAvailableHalfSuitsForClaim(state, myPlayerId);
-    const myHand = me.hand || [];
+    const availableHS = getAvailableHalfSuitsForClaim(getStateWithHands(), myPlayerId);
+    const myHand = gameHands[myPlayerId] || [];
     const hasCards = myHand.length > 0;
 
     // Check if there are valid opponents with cards to ask
     const hasValidOpponents = Object.values(state.players || {})
-      .some(p => p.team !== me.team && (p.hand || []).length > 0);
+      .some(p => p.team !== me.team && p.cardCount > 0);
 
     const canAsk = hasCards && hasValidOpponents;
 
@@ -368,7 +388,7 @@ window.passMyTurn = async () => {
   let nextTurn = null;
   for (let i = 1; i <= order.length; i++) {
     const nextId = order[(currentIdx + i) % order.length];
-    if ((players[nextId]?.hand || []).length > 0) { nextTurn = nextId; break; }
+    if ((gameHands[nextId] || []).length > 0) { nextTurn = nextId; break; }
   }
 
   const updates = { currentTurn: nextTurn };
@@ -422,11 +442,11 @@ window.closeAskModal = () => {
 function renderAskModal() {
   const state = gameState;
   const me = state.players[myPlayerId];
-  const myHand = me.hand || [];
+  const myHand = gameHands[myPlayerId] || [];
 
   // Opponents (different team, has cards)
   const opponents = Object.entries(state.players)
-    .filter(([pid, p]) => p.team !== me.team && (p.hand || []).length > 0);
+    .filter(([pid, p]) => p.team !== me.team && p.cardCount > 0);
 
   document.getElementById('ask-opponent-select').innerHTML = `
     <div class="step-label">1. Choose an opponent to ask</div>
@@ -434,7 +454,7 @@ function renderAskModal() {
       ${opponents.map(([pid, p]) => `
         <button class="player-select-btn ${askState.targetId === pid ? 'selected' : ''}"
           onclick="selectAskTarget('${pid}')">
-          ${escapeHtml(p.name)} (${(p.hand || []).length} cards)
+          ${escapeHtml(p.name)} (${p.cardCount} cards)
         </button>`).join('')}
     </div>`;
 
@@ -490,27 +510,25 @@ document.getElementById('btn-confirm-ask').addEventListener('click', async () =>
   const { targetId, card } = askState;
   if (!targetId || !card) return;
 
-  const validation = validateAsk(gameState, myPlayerId, targetId, card);
+  const stateWithHands = getStateWithHands();
+  const validation = validateAsk(stateWithHands, myPlayerId, targetId, card);
   if (!validation.valid) return showToast(validation.reason, 'error');
 
   closeAskModal();
 
-  const result = processAsk(gameState, myPlayerId, targetId, card);
+  const result = processAsk(stateWithHands, myPlayerId, targetId, card);
 
-  // Build updates
-  const updates = {
-    currentTurn: result.currentTurn,
+  const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+  const rootUpdates = {
+    [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
+    [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
   };
   for (const [pid, p] of Object.entries(result.players)) {
-    updates[`players/${pid}/hand`] = p.hand;
-    updates[`players/${pid}/cardCount`] = p.cardCount;
+    rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
+    rootUpdates[`hands/${currentRoomCode}/${pid}`] = p.hand;
   }
 
-  // Append log entry
-  const logRef = push(ref(db, `games/${currentRoomCode}/log`));
-  updates[`log/${logRef.key}`] = { ...result.log, time: formatTime() };
-
-  await update(ref(db, `games/${currentRoomCode}`), updates);
+  await update(ref(db, '/'), rootUpdates);
 
   if (result.hit) showToast(`Got it! You received the ${getCardDisplay(card).label}`, 'success');
   else showToast(`Not there. Turn passes.`, 'info');
@@ -531,7 +549,7 @@ window.closeClaimModal = () => {
 
 function renderClaimModal() {
   const state = gameState;
-  const availableHS = getAvailableHalfSuitsForClaim(state, myPlayerId);
+  const availableHS = getAvailableHalfSuitsForClaim(getStateWithHands(), myPlayerId);
   const claimed = state.claimedSets || {};
 
   document.getElementById('claim-halfsuit-select').innerHTML = `
@@ -558,7 +576,7 @@ function renderClaimModal() {
       <div class="claim-assignment">
         ${hs.cards.map(card => {
           const d = getCardDisplay(card);
-          const myHand = (me.hand || []);
+          const myHand = gameHands[myPlayerId] || [];
           const iHaveIt = myHand.includes(card);
           const selectedPid = claimState.assignment[card] || (iHaveIt ? myPlayerId : '');
           if (!claimState.assignment[card] && iHaveIt) claimState.assignment[card] = myPlayerId;
@@ -590,8 +608,7 @@ window.selectClaimHalfSuit = (hsId) => {
   claimState.halfSuitId = hsId;
   claimState.assignment = {};
   // Pre-fill cards I have
-  const me = gameState.players[myPlayerId];
-  for (const card of (me.hand || [])) {
+  for (const card of (gameHands[myPlayerId] || [])) {
     if (getHalfSuitId(card) === hsId) claimState.assignment[card] = myPlayerId;
   }
   renderClaimModal();
@@ -607,28 +624,28 @@ window.assignClaimCard = (card, pid) => {
 document.getElementById('btn-confirm-claim').addEventListener('click', async () => {
   const { halfSuitId, assignment } = claimState;
 
-  const validation = validateClaim(gameState, myPlayerId, halfSuitId, assignment);
+  const stateWithHands = getStateWithHands();
+  const validation = validateClaim(stateWithHands, myPlayerId, halfSuitId, assignment);
   if (!validation.valid) return showToast(validation.reason, 'error');
 
   closeClaimModal();
 
-  const result = processClaim(gameState, myPlayerId, halfSuitId, assignment);
+  const result = processClaim(stateWithHands, myPlayerId, halfSuitId, assignment);
 
-  const updates = {
-    scores: result.scores,
-    claimedSets: result.claimedSets,
-    currentTurn: result.currentTurn,
-    status: result.status,
+  const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+  const rootUpdates = {
+    [`games/${currentRoomCode}/scores`]: result.scores,
+    [`games/${currentRoomCode}/claimedSets`]: result.claimedSets,
+    [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
+    [`games/${currentRoomCode}/status`]: result.status,
+    [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
   };
   for (const [pid, p] of Object.entries(result.players)) {
-    updates[`players/${pid}/hand`] = p.hand;
-    updates[`players/${pid}/cardCount`] = p.cardCount;
+    rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
+    rootUpdates[`hands/${currentRoomCode}/${pid}`] = p.hand;
   }
 
-  const logRef = push(ref(db, `games/${currentRoomCode}/log`));
-  updates[`log/${logRef.key}`] = { ...result.log, time: formatTime() };
-
-  await update(ref(db, `games/${currentRoomCode}`), updates);
+  await update(ref(db, '/'), rootUpdates);
 
   const { correct, opponentHasCard } = result.claimResult;
   if (opponentHasCard) showToast('Claim failed — opponent had a card!', 'error');
@@ -677,7 +694,8 @@ function renderEnded(state) {
   }).join('');
 }
 
-document.getElementById('btn-play-again').addEventListener('click', () => {
+document.getElementById('btn-play-again').addEventListener('click', async () => {
+  if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
   showScreen('home');
   currentRoomCode = null;
   gameState = null;
@@ -688,9 +706,52 @@ function escapeHtml(str) {
   return String(str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Pre-fill name if returning
-if (myName) {
-  document.getElementById('input-name').value = myName;
-}
+// ===== AUTH =====
+document.getElementById('btn-google-signin').addEventListener('click', async () => {
+  try {
+    await signInWithPopup(auth, googleProvider);
+    // onAuthStateChanged handles everything after sign-in
+  } catch (e) {
+    showToast('Sign in failed. Please try again.', 'error');
+  }
+});
 
-showScreen('home');
+document.getElementById('btn-sign-out').addEventListener('click', async () => {
+  if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
+  currentRoomCode = null;
+  gameState = null;
+  await signOut(auth);
+  // onAuthStateChanged will show auth screen
+});
+
+onAuthStateChanged(auth, async (user) => {
+  if (!user) {
+    showScreen('auth');
+    return;
+  }
+
+  myPlayerId = user.uid;
+  myName = user.displayName || '';
+  document.getElementById('input-name').value = myName;
+
+  // Check if user has an active game in Firebase
+  const activeRoomSnap = await get(ref(db, `users/${user.uid}/activeRoom`));
+  const activeRoom = activeRoomSnap.val();
+
+  if (activeRoom) {
+    const gameSnap = await get(ref(db, `games/${activeRoom}`));
+    if (gameSnap.exists()) {
+      const state = gameSnap.val();
+      if (state.players?.[user.uid] && state.status !== 'ended') {
+        currentRoomCode = activeRoom;
+        showToast(`Welcome back, ${myName}! Rejoining game...`, 'info');
+        joinRoom(activeRoom);
+        return;
+      }
+    }
+    // Stale room — clear it
+    await set(ref(db, `users/${user.uid}/activeRoom`), null);
+  }
+
+  showScreen('home');
+});

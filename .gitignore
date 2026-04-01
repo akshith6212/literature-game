@@ -34,3 +34,8 @@ node_modules/
 .claude/
 
 .DS_Store
+
+firebase-config copy.js
+notes.txt
+CLAUDE.md
+DEPLOY.md
