@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Literature Card Game</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ===== HOME SCREEN ===== -->
+<div id="screen-home" class="screen">
+  <div class="logo">
+    <div class="suits">♠ ♥ ♦ ♣</div>
+    <h1>Literature</h1>
+    <p>The classic card game for 6 or 8 players</p>
+  </div>
+
+  <div class="home-panel">
+    <div class="form-group">
+      <label for="input-name">Your Name</label>
+      <input type="text" id="input-name" placeholder="Enter your name" maxlength="20" autocomplete="off" />
+    </div>
+
+    <button id="btn-create-game" class="btn btn-primary btn-full btn-lg">
+      Create New Game
+    </button>
+
+    <div class="divider">or join existing</div>
+
+    <div class="form-group">
+      <label for="input-room-code">Room Code</label>
+      <input type="text" id="input-room-code" placeholder="e.g. ABC123" maxlength="6"
+        style="text-transform:uppercase;letter-spacing:4px;font-family:monospace;font-size:1.2rem" />
+    </div>
+
+    <button id="btn-join-game" class="btn btn-secondary btn-full">
+      Join Game
+    </button>
+  </div>
+
+  <div style="text-align:center;color:var(--text-muted);font-size:0.8rem;max-width:380px">
+    6 or 8 players · Two teams · Ask for cards · Declare half-suits
+  </div>
+</div>
+
+<!-- ===== LOBBY SCREEN ===== -->
+<div id="screen-lobby" class="screen">
+  <div class="lobby-header">
+    <h2>Game Lobby</h2>
+    <div class="room-code-badge">
+      <span>Room:</span>
+      <span class="code" id="lobby-room-code">------</span>
+      <button class="copy-btn" id="btn-copy-code">Copy</button>
+    </div>
+  </div>
+
+  <div style="color:var(--text-muted);font-size:0.9rem">
+    Share the room code with your friends. You need 6 or 8 players total with equal teams.
+    Click "Switch" to change your team.
+  </div>
+
+  <div class="teams-container">
+    <div class="team-card team-0">
+      <h3><span class="team-dot"></span> Team 1</h3>
+      <ul class="player-list" id="team0-list"></ul>
+    </div>
+    <div class="team-card team-1">
+      <h3><span class="team-dot"></span> Team 2</h3>
+      <ul class="player-list" id="team1-list"></ul>
+    </div>
+  </div>
+
+  <div id="lobby-status" class="lobby-status">Waiting for players...</div>
+
+  <div class="lobby-actions">
+    <button id="btn-start-game" class="btn btn-success btn-lg" style="display:none">
+      Start Game
+    </button>
+  </div>
+</div>
+
+<!-- ===== GAME SCREEN ===== -->
+<div id="screen-game" class="screen">
+  <!-- Header -->
+  <div class="game-header">
+    <h2>Literature</h2>
+
+    <div class="score-display">
+      <div class="score-team team-0">
+        <span>Team 1</span>
+        <span class="score-num" id="game-score-0">0</span>
+      </div>
+      <span class="score-divider">—</span>
+      <div class="score-team team-1">
+        <span class="score-num" id="game-score-1">0</span>
+        <span>Team 2</span>
+      </div>
+    </div>
+
+    <div style="text-align:right">
+      <div id="turn-indicator" class="turn-indicator"></div>
+      <div id="claimed-sets-display" class="claimed-sets-display" style="margin-top:4px;justify-content:flex-end"></div>
+    </div>
+  </div>
+
+  <!-- Body -->
+  <div class="game-body">
+    <!-- Left: Players -->
+    <div class="panel-players">
+      <div>
+        <div class="team-group-header team-0">● Team 1</div>
+        <div id="game-team0-players" class="team-group"></div>
+      </div>
+      <div>
+        <div class="team-group-header team-1">● Team 2</div>
+        <div id="game-team1-players" class="team-group"></div>
+      </div>
+
+      <div style="margin-top:auto">
+        <div class="section-header">
+          <h3>How to Play</h3>
+        </div>
+        <div style="font-size:0.75rem;color:var(--text-muted);line-height:1.6">
+          <b>Ask:</b> Pick an opponent + card you don't have (from a half-suit you hold).<br><br>
+          <b>Hit:</b> They give you the card, keep your turn.<br><br>
+          <b>Miss:</b> Turn passes to them.<br><br>
+          <b>Declare:</b> Assign all 6 cards of a half-suit to teammates. Correct = your team scores!
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: Log + Actions -->
+    <div class="panel-game">
+      <div id="game-log" class="game-log">
+        <div class="empty-state">Game events will appear here...</div>
+      </div>
+      <div id="action-bar" class="action-bar"></div>
+    </div>
+
+    <!-- Right: Hand -->
+    <div class="panel-hand">
+      <h3>Your Hand</h3>
+      <div id="hand-container"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== ENDED SCREEN ===== -->
+<div id="screen-ended" class="screen">
+  <div id="winner-display" class="winner-display">
+    <div class="trophy">🏆</div>
+    <h1>Game Over!</h1>
+  </div>
+
+  <div class="final-scores">
+    <div class="final-score-card team-0">
+      <div class="score-big" id="final-score-0">0</div>
+      <div class="score-label">Team 1</div>
+    </div>
+    <div style="font-size:2rem;color:var(--text-muted)">—</div>
+    <div class="final-score-card team-1">
+      <div class="score-big" id="final-score-1">0</div>
+      <div class="score-label">Team 2</div>
+    </div>
+  </div>
+
+  <div class="final-sets-breakdown">
+    <h3>Sets Breakdown</h3>
+    <div id="sets-breakdown"></div>
+  </div>
+
+  <button id="btn-play-again" class="btn btn-primary btn-lg">
+    Back to Home
+  </button>
+</div>
+
+<!-- ===== ASK MODAL ===== -->
+<div id="modal-ask" class="modal-overlay">
+  <div class="modal">
+    <h2>Ask for a Card</h2>
+    <p>Pick an opponent and the exact card you want. You must hold at least one card from that half-suit.</p>
+    <div class="modal-steps">
+      <div id="ask-opponent-select"></div>
+      <div id="ask-halfsuit-select"></div>
+      <div id="ask-card-select"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-confirm-ask" class="btn btn-primary" disabled>Ask!</button>
+      <button class="btn btn-secondary" onclick="closeAskModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CLAIM MODAL ===== -->
+<div id="modal-claim" class="modal-overlay">
+  <div class="modal">
+    <h2>Declare a Half-Suit</h2>
+    <p>Assign all 6 cards to the correct teammates. Get it exactly right for your team to score!</p>
+    <div class="modal-steps">
+      <div id="claim-halfsuit-select"></div>
+      <div id="claim-assignment"></div>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-confirm-claim" class="btn btn-success" disabled>Declare!</button>
+      <button class="btn btn-secondary" onclick="closeClaimModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== TOAST CONTAINER ===== -->
+<div id="toast-container"></div>
+
+<!-- Load app as ES module -->
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
