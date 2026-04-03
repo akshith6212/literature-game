@@ -9,6 +9,7 @@ import {
   getAvailableHalfSuitsForClaim, isGameOver, getWinner,
   generateRoomCode, arrangePlayerOrder,
 } from './engine.js';
+import { BotKnowledge, decideBotAction } from './bot.js';
 
 // ===== FIREBASE SETUP =====
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
@@ -32,6 +33,13 @@ let gameStateListener = null;
 let handsListener = null;
 let gameState = null;
 let gameHands = {};
+
+// ===== BOT STATE (host only) =====
+const botKnowledgeMap = new Map();   // botId -> BotKnowledge
+const processedLogKeys = new Set();  // log keys already fed to knowledge
+let botKnowledgeReady = false;
+let botTurnTimeout = null;
+let scheduledBotId = null;
 
 // ===== DOM REFS =====
 const screens = {
@@ -150,13 +158,25 @@ function joinRoom(code) {
       if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
       currentRoomCode = null;
       gameState = null;
+      resetBotState();
       showScreen('home');
       return;
     }
     gameState = snapshot.val();
 
     if (gameState.status === 'lobby') renderLobby(gameState);
-    else if (gameState.status === 'playing') renderGame(gameState);
+    else if (gameState.status === 'playing') {
+      if (gameState.hostId === myPlayerId) {
+        if (!botKnowledgeReady) { initBotKnowledge(gameState); botKnowledgeReady = true; }
+        else updateBotKnowledge(gameState);
+      }
+      renderGame(gameState);
+      if (gameState.hostId === myPlayerId) {
+        const turnPlayer = gameState.players?.[gameState.currentTurn];
+        if (turnPlayer?.isBot) scheduleBotTurn(gameState.currentTurn);
+        else clearBotTurn();
+      }
+    }
     else if (gameState.status === 'ended') renderEnded(gameState);
   });
 
@@ -198,6 +218,11 @@ function renderLobby(state) {
 
   document.getElementById('btn-end-game-lobby').style.display = isHost ? 'block' : 'none';
   document.getElementById('btn-leave-game-lobby').style.display = !isHost ? 'block' : 'none';
+
+  const botControls = document.getElementById('bot-controls');
+  const botCount = Object.values(players).filter(p => p.isBot).length;
+  botControls.style.display = (isHost && total < 8) ? 'flex' : 'none';
+  document.getElementById('btn-add-bot').disabled = botCount >= 2;
 }
 
 function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
@@ -206,15 +231,23 @@ function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
     const isMe = pid === myPlayerId;
     const isHostPlayer = pid === hostId;
     const otherTeam = myTeam === 0 ? 1 : 0;
-    const switchBtn = isMe
+    const switchBtn = (isMe && !p.isBot)
       ? `<button class="switch-team-btn" onclick="switchTeam('${pid}', ${otherTeam})">Switch →</button>`
+      : '';
+    const botBadge = p.isBot
+      ? `<span class="bot-badge">🤖 ${p.botLevel || 'easy'}</span>`
+      : '';
+    const removeBotBtn = (isHost && p.isBot)
+      ? `<button class="remove-bot-btn" onclick="removeBot('${pid}')">✕</button>`
       : '';
     return `
       <li class="player-item">
         <span class="name">${escapeHtml(p.name)}</span>
         ${isMe ? '<span class="you-badge">You</span>' : ''}
         ${isHostPlayer ? '<span class="host-badge">Host</span>' : ''}
+        ${botBadge}
         ${switchBtn}
+        ${removeBotBtn}
       </li>`;
   }).join('');
 }
@@ -254,6 +287,31 @@ document.getElementById('btn-start-game').addEventListener('click', async () => 
 
   await update(ref(db, '/'), rootUpdates);
 });
+
+document.getElementById('btn-add-bot').addEventListener('click', async () => {
+  const level = document.getElementById('bot-level-select').value;
+  const players = gameState?.players || {};
+  const total = Object.keys(players).length;
+  if (total >= 8) return showToast('Room is full', 'error');
+
+  const botCount = Object.values(players).filter(p => p.isBot).length;
+  if (botCount >= 2) return showToast('Maximum 2 bots allowed', 'error');
+
+  const levelLabel = level.charAt(0).toUpperCase() + level.slice(1);
+  const botName = `Bot ${botCount + 1} (${levelLabel})`;
+  const team0 = Object.values(players).filter(p => p.team === 0).length;
+  const team1 = Object.values(players).filter(p => p.team === 1).length;
+  const team = team0 <= team1 ? 0 : 1;
+  const botId = 'bot_' + Math.random().toString(36).slice(2, 10);
+
+  await update(ref(db, `games/${currentRoomCode}/players/${botId}`), {
+    name: botName, team, cardCount: 0, connected: true, isBot: true, botLevel: level,
+  });
+});
+
+window.removeBot = async (botId) => {
+  await set(ref(db, `games/${currentRoomCode}/players/${botId}`), null);
+};
 
 async function endGame() {
   if (!confirm('End and delete this game? All players will be returned to the home screen.')) return;
@@ -318,6 +376,139 @@ async function leaveGame() {
 
 document.getElementById('btn-leave-game-lobby').addEventListener('click', leaveGame);
 document.getElementById('btn-leave-game-ingame').addEventListener('click', leaveGame);
+
+// ===== BOT ENGINE =====
+function resetBotState() {
+  clearBotTurn();
+  botKnowledgeMap.clear();
+  processedLogKeys.clear();
+  botKnowledgeReady = false;
+}
+
+function clearBotTurn() {
+  if (botTurnTimeout) { clearTimeout(botTurnTimeout); botTurnTimeout = null; }
+  scheduledBotId = null;
+}
+
+function initBotKnowledge(state) {
+  botKnowledgeMap.clear();
+  processedLogKeys.clear();
+  for (const [pid, p] of Object.entries(state.players || {})) {
+    if (p.isBot) botKnowledgeMap.set(pid, new BotKnowledge(p.botLevel || 'easy'));
+  }
+  // Replay existing log so a reconnecting host catches up
+  const log = state.log || {};
+  const entries = Array.isArray(log) ? [] : Object.entries(log);
+  for (const [key, entry] of entries) {
+    processedLogKeys.add(key);
+    if (entry.type === 'ask') {
+      for (const k of botKnowledgeMap.values()) k.processAsk(entry);
+    }
+  }
+}
+
+function updateBotKnowledge(state) {
+  const log = state.log || {};
+  const entries = Array.isArray(log) ? [] : Object.entries(log);
+  for (const [key, entry] of entries) {
+    if (processedLogKeys.has(key)) continue;
+    processedLogKeys.add(key);
+    if (entry.type === 'ask') {
+      for (const k of botKnowledgeMap.values()) k.processAsk(entry);
+    }
+  }
+}
+
+function scheduleBotTurn(botId) {
+  if (scheduledBotId === botId) return; // already scheduled for this bot
+  clearBotTurn();
+  scheduledBotId = botId;
+  const delay = 1500 + Math.random() * 1000; // 1.5–2.5 s
+  botTurnTimeout = setTimeout(() => {
+    botTurnTimeout = null;
+    scheduledBotId = null;
+    executeBotTurn(botId);
+  }, delay);
+}
+
+async function executeBotTurn(botId) {
+  if (!currentRoomCode || !gameState) return;
+  if (gameState.currentTurn !== botId) return; // turn changed while waiting
+  const state = gameState;
+  const bot = state.players?.[botId];
+  if (!bot?.isBot) return;
+
+  const knowledge = botKnowledgeMap.get(botId) || new BotKnowledge(bot.botLevel || 'easy');
+  const stateWithHands = getStateWithHands();
+  let action = decideBotAction(state, botId, gameHands, knowledge);
+
+  if (action.type === 'declare') {
+    const validation = validateClaim(stateWithHands, botId, action.halfSuitId, action.assignment);
+    if (!validation.valid) action = { type: 'pass' }; // safety fallback
+  }
+
+  if (action.type === 'ask') {
+    const validation = validateAsk(stateWithHands, botId, action.targetId, action.card);
+    if (!validation.valid) {
+      // Retry with blank knowledge for a random valid ask
+      action = decideBotAction(state, botId, gameHands, new BotKnowledge('hard'));
+      if (action.type !== 'ask' || !validateAsk(stateWithHands, botId, action.targetId, action.card).valid) {
+        action = { type: 'pass' };
+      }
+    }
+  }
+
+  if (action.type === 'pass') {
+    const order = state.playerOrder || [];
+    const idx = order.indexOf(botId);
+    let nextTurn = null;
+    for (let i = 1; i <= order.length; i++) {
+      const id = order[(idx + i) % order.length];
+      if ((gameHands[id] || []).length > 0) { nextTurn = id; break; }
+    }
+    const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+    await update(ref(db, `games/${currentRoomCode}`), {
+      currentTurn: nextTurn,
+      [`log/${logKey}`]: { type: 'system', text: `${escapeHtml(bot.name)} has no moves — turn passes.`, time: formatTime() },
+    });
+    return;
+  }
+
+  if (action.type === 'ask') {
+    const result = processAsk(stateWithHands, botId, action.targetId, action.card);
+    const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+    const rootUpdates = {
+      [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
+      [`games/${currentRoomCode}/log/${logKey}`]: {
+        ...result.log, time: formatTime(),
+        askerId: botId, targetId: action.targetId, card: action.card, hit: result.hit,
+      },
+    };
+    for (const [pid, p] of Object.entries(result.players)) {
+      rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
+      rootUpdates[`hands/${currentRoomCode}/${pid}`] = p.hand;
+    }
+    await update(ref(db, '/'), rootUpdates);
+    return;
+  }
+
+  if (action.type === 'declare') {
+    const result = processClaim(stateWithHands, botId, action.halfSuitId, action.assignment);
+    const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
+    const rootUpdates = {
+      [`games/${currentRoomCode}/scores`]: result.scores,
+      [`games/${currentRoomCode}/claimedSets`]: result.claimedSets,
+      [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
+      [`games/${currentRoomCode}/status`]: result.status,
+      [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
+    };
+    for (const [pid, p] of Object.entries(result.players)) {
+      rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
+      rootUpdates[`hands/${currentRoomCode}/${pid}`] = p.hand;
+    }
+    await update(ref(db, '/'), rootUpdates);
+  }
+}
 
 // ===== GAME SCREEN =====
 function renderGame(state) {
@@ -601,7 +792,10 @@ document.getElementById('btn-confirm-ask').addEventListener('click', async () =>
   const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
   const rootUpdates = {
     [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
-    [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
+    [`games/${currentRoomCode}/log/${logKey}`]: {
+      ...result.log, time: formatTime(),
+      askerId: myPlayerId, targetId, card, hit: result.hit,
+    },
   };
   for (const [pid, p] of Object.entries(result.players)) {
     rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
@@ -779,6 +973,7 @@ document.getElementById('btn-play-again').addEventListener('click', async () => 
   showScreen('home');
   currentRoomCode = null;
   gameState = null;
+  resetBotState();
 });
 
 // ===== HELPERS =====

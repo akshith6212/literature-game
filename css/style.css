@@ -298,6 +298,53 @@ input[type="text"]::placeholder {
   border-radius: 99px;
   font-weight: 600;
 }
+.player-item .bot-badge {
+  font-size: 0.7rem;
+  background: #7c4dff;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.remove-bot-btn {
+  margin-left: auto;
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.remove-bot-btn:hover { background: var(--danger); color: white; }
+
+.bot-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+.bot-controls-label {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.bot-level-select {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .switch-team-btn {
   background: none;
   border: 1px solid var(--border);

@@ -91,6 +91,16 @@
 
   <div id="lobby-status" class="lobby-status">Waiting for players...</div>
 
+  <div id="bot-controls" class="bot-controls" style="display:none">
+    <span class="bot-controls-label">Add a bot:</span>
+    <select id="bot-level-select" class="bot-level-select">
+      <option value="easy">Easy (30% memory)</option>
+      <option value="medium">Medium (60% memory)</option>
+      <option value="hard">Hard (full memory)</option>
+    </select>
+    <button id="btn-add-bot" class="btn btn-secondary btn-sm">+ Add Bot</button>
+  </div>
+
   <div class="lobby-actions">
     <button id="btn-start-game" class="btn btn-success btn-lg" style="display:none">
       Start Game
