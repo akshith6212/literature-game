@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 244">
+  <defs>
+    <!-- Background gradient -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0f3460"/>
+    </linearGradient>
+
+    <!-- Text gradient: blue → red, anchored to the word width -->
+    <linearGradient id="txt" x1="64" y1="0" x2="296" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4fc3f7"/>
+      <stop offset="100%" stop-color="#e94560"/>
+    </linearGradient>
+
+    <!-- Subtle top-centre glow -->
+    <radialGradient id="hl" cx="50%" cy="0%" r="70%">
+      <stop offset="0%" stop-color="rgba(255,255,255,0.07)"/>
+      <stop offset="100%" stop-color="rgba(255,255,255,0)"/>
+    </radialGradient>
+
+    <!-- Per-card drop shadow -->
+    <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#000" flood-opacity="0.4"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="360" height="244" rx="20" fill="url(#bg)"/>
+  <!-- Top-centre highlight for depth -->
+  <rect width="360" height="244" rx="20" fill="url(#hl)"/>
+  <!-- Subtle frame border -->
+  <rect width="360" height="244" rx="20" fill="none" stroke="rgba(255,255,255,0.09)" stroke-width="1.5"/>
+
+  <!--
+    Cards fanned from rotation-centre (180, 178).
+    Each card rect: x=144 y=78 w=72 h=100
+    (bottom centre of card = rotation centre)
+    Render order back → front: ♠ ♥ ♦ ♣
+  -->
+
+  <!-- Card 1 — A♠  rotate -30° -->
+  <g transform="rotate(-30, 180, 178)" filter="url(#sh)">
+    <rect x="144" y="78" width="72" height="100" rx="7" fill="#f8fafc" stroke="#dde3ea" stroke-width="1"/>
+    <text x="153" y="95"  font-family="Georgia, serif" font-size="14" font-weight="bold" fill="#1e293b">A</text>
+    <text x="153" y="109" font-family="serif" font-size="12" fill="#1e293b">♠</text>
+    <text x="180" y="143" font-family="serif" font-size="40" fill="#1e293b" text-anchor="middle" dominant-baseline="middle">♠</text>
+  </g>
+
+  <!-- Card 2 — K♥  rotate -10° -->
+  <g transform="rotate(-10, 180, 178)" filter="url(#sh)">
+    <rect x="144" y="78" width="72" height="100" rx="7" fill="#f8fafc" stroke="#dde3ea" stroke-width="1"/>
+    <text x="153" y="95"  font-family="Georgia, serif" font-size="14" font-weight="bold" fill="#dc2626">K</text>
+    <text x="153" y="109" font-family="serif" font-size="12" fill="#dc2626">♥</text>
+    <text x="180" y="143" font-family="serif" font-size="40" fill="#dc2626" text-anchor="middle" dominant-baseline="middle">♥</text>
+  </g>
+
+  <!-- Card 3 — Q♦  rotate +10° -->
+  <g transform="rotate(10, 180, 178)" filter="url(#sh)">
+    <rect x="144" y="78" width="72" height="100" rx="7" fill="#f8fafc" stroke="#dde3ea" stroke-width="1"/>
+    <text x="153" y="95"  font-family="Georgia, serif" font-size="14" font-weight="bold" fill="#dc2626">Q</text>
+    <text x="153" y="109" font-family="serif" font-size="12" fill="#dc2626">♦</text>
+    <text x="180" y="143" font-family="serif" font-size="40" fill="#dc2626" text-anchor="middle" dominant-baseline="middle">♦</text>
+  </g>
+
+  <!-- Card 4 — J♣  rotate +30° -->
+  <g transform="rotate(30, 180, 178)" filter="url(#sh)">
+    <rect x="144" y="78" width="72" height="100" rx="7" fill="#f8fafc" stroke="#dde3ea" stroke-width="1"/>
+    <text x="153" y="95"  font-family="Georgia, serif" font-size="14" font-weight="bold" fill="#1e293b">J</text>
+    <text x="153" y="109" font-family="serif" font-size="12" fill="#1e293b">♣</text>
+    <text x="180" y="143" font-family="serif" font-size="40" fill="#1e293b" text-anchor="middle" dominant-baseline="middle">♣</text>
+  </g>
+
+  <!-- Game title -->
+  <text x="180" y="212"
+        font-family="'Segoe UI', system-ui, sans-serif"
+        font-size="42" font-weight="800" letter-spacing="-1"
+        text-anchor="middle" fill="url(#txt)">Literature</text>
+
+  <!-- Tagline -->
+  <text x="180" y="234"
+        font-family="'Segoe UI', system-ui, sans-serif"
+        font-size="11" letter-spacing="3.5"
+        text-anchor="middle" fill="#9fa8da">THE CARD GAME</text>
+</svg>
