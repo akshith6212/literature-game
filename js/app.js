@@ -203,14 +203,21 @@ function renderLobby(state) {
   document.getElementById('team1-list').innerHTML = renderPlayerItems(team1Players, players, isHost, 1, state.hostId);
 
   const total = Object.keys(players).length;
+  const humanCount = Object.values(players).filter(p => !p.isBot).length;
   const t0 = team0Players.length;
   const t1 = team1Players.length;
-  const canStart = isHost && (total === 6 || total === 8) && t0 === t1;
+  const canStart = isHost && (total === 6 || total === 8) && t0 === t1 && humanCount >= 1;
 
   const statusEl = document.getElementById('lobby-status');
-  statusEl.textContent = canStart
-    ? 'Ready to start!'
-    : `${total}/6 or 8 players needed — teams must be equal`;
+  if (canStart) {
+    statusEl.textContent = 'Ready to start!';
+  } else if (humanCount < 1) {
+    statusEl.textContent = 'At least one real player is required';
+  } else if (t0 !== t1) {
+    statusEl.textContent = `${total} players — teams must be equal (${t0} vs ${t1})`;
+  } else {
+    statusEl.textContent = `${total} player${total !== 1 ? 's' : ''} — need exactly 6 or 8 to start`;
+  }
 
   const startBtn = document.getElementById('btn-start-game');
   startBtn.style.display = isHost ? 'block' : 'none';
@@ -220,9 +227,10 @@ function renderLobby(state) {
   document.getElementById('btn-leave-game-lobby').style.display = !isHost ? 'block' : 'none';
 
   const botControls = document.getElementById('bot-controls');
-  const botCount = Object.values(players).filter(p => p.isBot).length;
+  // Show bot controls only when room isn't full and adding one more won't remove the last human slot
   botControls.style.display = (isHost && total < 8) ? 'flex' : 'none';
-  document.getElementById('btn-add-bot').disabled = total >= 8;
+  // Disable if full OR if adding a bot would leave no humans (humanCount must stay >= 1)
+  document.getElementById('btn-add-bot').disabled = total >= 8 || humanCount < 1;
 }
 
 function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
@@ -292,7 +300,9 @@ document.getElementById('btn-add-bot').addEventListener('click', async () => {
   const level = document.getElementById('bot-level-select').value;
   const players = gameState?.players || {};
   const total = Object.keys(players).length;
+  const humanCount = Object.values(players).filter(p => !p.isBot).length;
   if (total >= 8) return showToast('Room is full', 'error');
+  if (humanCount < 1) return showToast('At least one real player is required', 'error');
 
   const botCount = Object.values(players).filter(p => p.isBot).length;
   const levelLabel = level.charAt(0).toUpperCase() + level.slice(1);
