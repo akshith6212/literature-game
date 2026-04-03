@@ -759,17 +759,14 @@ window.passMyTurn = async () => {
 function renderLog(state) {
   const log = state.log || {};
   const entries = Array.isArray(log) ? log : Object.values(log);
-  const latest = entries;  // ← Modified: now gets all entries
+  const latest = entries[entries.length - 1];  // Gets only the last entry
   const container = document.getElementById('game-log');
-  if (!latest || latest.length === 0) { 
-    container.innerHTML = '<div class="empty-state">Game events will appear here...</div>'; 
-    return; 
-  }
-  container.innerHTML = latest.map(entry => `
-    <div class="log-entry ${entry.type || ''}">
-      ${escapeHtml(entry.text || '')}
-      <div class="log-time">${entry.time || ''}</div>
-    </div>`).join('');
+  if (!latest) { container.innerHTML = '<div class="empty-state">Game events will appear here...</div>'; return; }
+  container.innerHTML = `
+    <div class="log-entry ${latest.type || ''}">
+      ${escapeHtml(latest.text || '')}
+      <div class="log-time">${latest.time || ''}</div>
+    </div>`;
 }
 
 function renderClaimedSets(state) {
