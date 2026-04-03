@@ -197,6 +197,12 @@ function joinRoom(code) {
     gameHands = snapshot.val() || {};
     if (gameState?.status === 'playing') {
       renderHandPanel();
+      // Re-render the action bar if it's my turn so getAvailableHalfSuitsForClaim
+      // uses the now-fresh hand data (fixes stale gameHands during listener race).
+      if (gameState.currentTurn === myPlayerId && !gameState.pendingTurnChoice) {
+        const me = gameState.players?.[myPlayerId];
+        if (me) renderActionBar(gameState, me, true);
+      }
     }
   });
 }
@@ -690,8 +696,10 @@ function renderActionBar(state, me, isMyTurn) {
 
   if (isMyTurn) {
     const availableHS = getAvailableHalfSuitsForClaim(getStateWithHands(), myPlayerId);
-    const myHand = gameHands[myPlayerId] || [];
-    const hasCards = myHand.length > 0;
+    // Use cardCount from the game-state snapshot (same listener) as the authoritative source.
+    // gameHands comes from a separate listener and may not have arrived yet, causing a false
+    // "no cards" reading and incorrectly showing the Pass Turn button.
+    const hasCards = (me.cardCount ?? (gameHands[myPlayerId] || []).length) > 0;
 
     // Check if there are valid opponents with cards to ask
     const hasValidOpponents = Object.values(state.players || {})
