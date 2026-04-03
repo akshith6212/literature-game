@@ -13,7 +13,7 @@ import {
 // ===== FIREBASE SETUP =====
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import {
-  getDatabase, ref, set, get, update, onValue, push, serverTimestamp, off,
+  getDatabase, ref, set, get, update, onValue, push, serverTimestamp, off, runTransaction,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
 import {
   getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut,
@@ -142,8 +142,17 @@ function joinRoom(code) {
   if (gameStateListener) off(ref(db, `games/${code}`), 'value', gameStateListener);
   if (handsListener) off(ref(db, `hands/${code}`), 'value', handsListener);
 
-  gameStateListener = onValue(ref(db, `games/${code}`), snapshot => {
-    if (!snapshot.exists()) return;
+  gameStateListener = onValue(ref(db, `games/${code}`), async snapshot => {
+    if (!currentRoomCode) return; // Already left — ignore stale callbacks
+    if (!snapshot.exists()) {
+      // Host deleted the game — send everyone back to home
+      showToast('The host ended the game.', 'info');
+      if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
+      currentRoomCode = null;
+      gameState = null;
+      showScreen('home');
+      return;
+    }
     gameState = snapshot.val();
 
     if (gameState.status === 'lobby') renderLobby(gameState);
@@ -186,6 +195,9 @@ function renderLobby(state) {
   const startBtn = document.getElementById('btn-start-game');
   startBtn.style.display = isHost ? 'block' : 'none';
   startBtn.disabled = !canStart;
+
+  document.getElementById('btn-end-game-lobby').style.display = isHost ? 'block' : 'none';
+  document.getElementById('btn-leave-game-lobby').style.display = !isHost ? 'block' : 'none';
 }
 
 function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
@@ -243,6 +255,70 @@ document.getElementById('btn-start-game').addEventListener('click', async () => 
   await update(ref(db, '/'), rootUpdates);
 });
 
+async function endGame() {
+  if (!confirm('End and delete this game? All players will be returned to the home screen.')) return;
+  await Promise.all([
+    set(ref(db, `games/${currentRoomCode}`), null),
+    set(ref(db, `hands/${currentRoomCode}`), null),
+  ]);
+  // onValue listener fires with !snapshot.exists() for all clients (including host)
+}
+
+document.getElementById('btn-end-game-lobby').addEventListener('click', endGame);
+document.getElementById('btn-end-game-ingame').addEventListener('click', endGame);
+
+async function leaveGame() {
+  if (!confirm('Leave this game? You will be removed from the room.')) return;
+
+  const code = currentRoomCode;
+  const pid = myPlayerId;
+
+  // Detach listeners and navigate immediately
+  if (gameStateListener) { off(ref(db, `games/${code}`), 'value', gameStateListener); gameStateListener = null; }
+  if (handsListener) { off(ref(db, `hands/${code}`), 'value', handsListener); handsListener = null; }
+  currentRoomCode = null;
+  gameState = null;
+  showScreen('home');
+
+  // Transaction reads the latest server state, so concurrent leaves don't clobber each other
+  runTransaction(ref(db, `games/${code}`), (game) => {
+    if (!game) return game; // room already gone
+    if (!game.players?.[pid]) return game; // already removed
+
+    const playerName = game.players[pid].name || 'A player';
+    delete game.players[pid];
+    game.playerOrder = (game.playerOrder || []).filter(id => id !== pid);
+
+    // Pass the turn if it was ours
+    if (game.currentTurn === pid) {
+      let nextTurn = null;
+      for (const id of game.playerOrder) {
+        if ((game.players[id]?.cardCount || 0) > 0) { nextTurn = id; break; }
+      }
+      game.currentTurn = nextTurn;
+    }
+
+    // Log departure if game was in progress
+    if (game.status === 'playing') {
+      if (!game.log) game.log = {};
+      game.log[Date.now().toString(36)] = {
+        type: 'system',
+        text: `${playerName} left the game.`,
+        time: formatTime(),
+      };
+    }
+
+    return game;
+  });
+
+  // Hand and activeRoom are player-specific paths — safe to write directly
+  set(ref(db, `hands/${code}/${pid}`), null);
+  set(ref(db, `users/${pid}/activeRoom`), null);
+}
+
+document.getElementById('btn-leave-game-lobby').addEventListener('click', leaveGame);
+document.getElementById('btn-leave-game-ingame').addEventListener('click', leaveGame);
+
 // ===== GAME SCREEN =====
 function renderGame(state) {
   showScreen('game');
@@ -251,7 +327,11 @@ function renderGame(state) {
   if (!me) return;
 
   const isMyTurn = state.currentTurn === myPlayerId;
+  const isHost = state.hostId === myPlayerId;
   const scores = state.scores || [0, 0];
+
+  document.getElementById('btn-end-game-ingame').style.display = isHost ? 'inline-block' : 'none';
+  document.getElementById('btn-leave-game-ingame').style.display = !isHost ? 'inline-block' : 'none';
 
   // Header
   document.getElementById('game-score-0').textContent = scores[0];
