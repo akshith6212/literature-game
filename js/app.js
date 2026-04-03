@@ -143,15 +143,14 @@ function joinRoom(code) {
   if (handsListener) off(ref(db, `hands/${code}`), 'value', handsListener);
 
   gameStateListener = onValue(ref(db, `games/${code}`), async snapshot => {
+    if (!currentRoomCode) return; // Already left — ignore stale callbacks
     if (!snapshot.exists()) {
       // Host deleted the game — send everyone back to home
-      if (currentRoomCode) {
-        showToast('The host ended the game.', 'info');
-        if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
-        currentRoomCode = null;
-        gameState = null;
-        showScreen('home');
-      }
+      showToast('The host ended the game.', 'info');
+      if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
+      currentRoomCode = null;
+      gameState = null;
+      showScreen('home');
       return;
     }
     gameState = snapshot.val();
@@ -303,16 +302,16 @@ async function leaveGame() {
     };
   }
 
-  // Clear local state before writing so the snapshot callback doesn't re-route us
+  // Detach listeners and navigate immediately — don't wait for Firebase writes
+  if (gameStateListener) { off(ref(db, `games/${code}`), 'value', gameStateListener); gameStateListener = null; }
+  if (handsListener) { off(ref(db, `hands/${code}`), 'value', handsListener); handsListener = null; }
   currentRoomCode = null;
   gameState = null;
-
-  await Promise.all([
-    update(ref(db, '/'), updates),
-    set(ref(db, `users/${pid}/activeRoom`), null),
-  ]);
-
   showScreen('home');
+
+  // Fire-and-forget: clean up Firebase in the background
+  update(ref(db, '/'), updates);
+  set(ref(db, `users/${pid}/activeRoom`), null);
 }
 
 document.getElementById('btn-leave-game-lobby').addEventListener('click', leaveGame);
