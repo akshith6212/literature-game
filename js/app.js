@@ -40,6 +40,7 @@ const processedLogKeys = new Set();  // log keys already fed to knowledge
 let botKnowledgeReady = false;
 let botTurnTimeout = null;
 let scheduledBotId = null;
+let botChoiceTimeout = null;         // auto-resolve pendingTurnChoice for bot choosers
 
 // ===== DOM REFS =====
 const screens = {
@@ -172,9 +173,21 @@ function joinRoom(code) {
       }
       renderGame(gameState);
       if (gameState.hostId === myPlayerId) {
-        const turnPlayer = gameState.players?.[gameState.currentTurn];
-        if (turnPlayer?.isBot) scheduleBotTurn(gameState.currentTurn);
-        else clearBotTurn();
+        if (gameState.pendingTurnChoice) {
+          clearBotTurn();
+          const chooser = gameState.players?.[gameState.pendingTurnChoice.chooserId];
+          if (chooser?.isBot && !botChoiceTimeout) {
+            botChoiceTimeout = setTimeout(async () => {
+              botChoiceTimeout = null;
+              if (currentRoomCode && gameState?.pendingTurnChoice) resolveBotTurnChoice(gameState);
+            }, 800);
+          }
+        } else {
+          if (botChoiceTimeout) { clearTimeout(botChoiceTimeout); botChoiceTimeout = null; }
+          const turnPlayer = gameState.players?.[gameState.currentTurn];
+          if (turnPlayer?.isBot) scheduleBotTurn(gameState.currentTurn);
+          else clearBotTurn();
+        }
       }
     }
     else if (gameState.status === 'ended') renderEnded(gameState);
@@ -388,6 +401,7 @@ document.getElementById('btn-leave-game-ingame').addEventListener('click', leave
 // ===== BOT ENGINE =====
 function resetBotState() {
   clearBotTurn();
+  if (botChoiceTimeout) { clearTimeout(botChoiceTimeout); botChoiceTimeout = null; }
   botKnowledgeMap.clear();
   processedLogKeys.clear();
   botKnowledgeReady = false;
@@ -502,11 +516,20 @@ async function executeBotTurn(botId) {
 
   if (action.type === 'declare') {
     const result = processClaim(stateWithHands, botId, action.halfSuitId, action.assignment);
+    // Bot auto-picks next turn: prefer itself if it has cards, else teammate with most cards
+    let botNextTurn = result.currentTurn;
+    if (result.status !== 'ended') {
+      const myTeam = state.players[botId].team;
+      const eligible = Object.entries(result.players)
+        .filter(([pid, p]) => p.team === myTeam && p.cardCount > 0)
+        .sort(([, a], [, b]) => b.cardCount - a.cardCount);
+      botNextTurn = eligible.find(([pid]) => pid === botId)?.[0] ?? eligible[0]?.[0] ?? result.currentTurn;
+    }
     const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
     const rootUpdates = {
       [`games/${currentRoomCode}/scores`]: result.scores,
       [`games/${currentRoomCode}/claimedSets`]: result.claimedSets,
-      [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
+      [`games/${currentRoomCode}/currentTurn`]: botNextTurn,
       [`games/${currentRoomCode}/status`]: result.status,
       [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
     };
@@ -516,6 +539,17 @@ async function executeBotTurn(botId) {
     }
     await update(ref(db, '/'), rootUpdates);
   }
+}
+
+async function resolveBotTurnChoice(state) {
+  const { chooserId } = state.pendingTurnChoice;
+  const myTeam = state.players[chooserId].team;
+  const eligible = Object.entries(state.players)
+    .filter(([pid, p]) => p.team === myTeam && p.cardCount > 0)
+    .sort(([, a], [, b]) => b.cardCount - a.cardCount);
+  // Prefer the bot chooser itself if it still has cards, else teammate with most cards
+  const next = eligible.find(([pid]) => pid === chooserId)?.[0] ?? eligible[0]?.[0] ?? null;
+  await update(ref(db, `games/${currentRoomCode}`), { currentTurn: next, pendingTurnChoice: null });
 }
 
 // ===== GAME SCREEN =====
@@ -622,6 +656,38 @@ function renderCard(card, options = {}) {
 
 function renderActionBar(state, me, isMyTurn) {
   const bar = document.getElementById('action-bar');
+
+  // ---- Post-declare turn choice ----
+  if (state.pendingTurnChoice) {
+    const { chooserId } = state.pendingTurnChoice;
+    if (chooserId === myPlayerId) {
+      const eligible = Object.entries(state.players)
+        .filter(([pid, p]) => p.team === me.team && p.cardCount > 0);
+      if (eligible.length <= 1) {
+        // Only one option — confirm automatically in next tick
+        const pid = eligible[0]?.[0] ?? null;
+        if (pid) setTimeout(() => window.chooseTurn(pid), 0);
+        bar.innerHTML = `<div class="waiting-message">Passing turn...</div>`;
+      } else {
+        bar.innerHTML = `
+          <div class="turn-picker">
+            <span class="turn-picker-label">You declared! Choose who plays next:</span>
+            <div class="turn-picker-btns">
+              ${eligible.map(([pid, p]) => `
+                <button class="btn ${pid === myPlayerId ? 'btn-primary' : 'btn-secondary'} btn-sm"
+                  onclick="chooseTurn('${pid}')">
+                  ${escapeHtml(p.name)}${pid === myPlayerId ? ' (you)' : ''}
+                </button>`).join('')}
+            </div>
+          </div>`;
+      }
+    } else {
+      const chooser = state.players?.[chooserId];
+      bar.innerHTML = `<div class="waiting-message">Waiting for ${escapeHtml(chooser?.name || '...')} to choose who plays next...</div>`;
+    }
+    return;
+  }
+
   if (isMyTurn) {
     const availableHS = getAvailableHalfSuitsForClaim(getStateWithHands(), myPlayerId);
     const myHand = gameHands[myPlayerId] || [];
@@ -659,6 +725,10 @@ function renderActionBar(state, me, isMyTurn) {
   }
 }
 
+window.chooseTurn = async (pid) => {
+  await update(ref(db, `games/${currentRoomCode}`), { currentTurn: pid, pendingTurnChoice: null });
+};
+
 window.passMyTurn = async () => {
   // Find next player with cards
   const players = gameState.players;
@@ -681,14 +751,17 @@ window.passMyTurn = async () => {
 function renderLog(state) {
   const log = state.log || {};
   const entries = Array.isArray(log) ? log : Object.values(log);
-  const latest = entries[entries.length - 1];
+  const latest = entries;  // ← Modified: now gets all entries
   const container = document.getElementById('game-log');
-  if (!latest) { container.innerHTML = '<div class="empty-state">Game events will appear here...</div>'; return; }
-  container.innerHTML = `
-    <div class="log-entry ${latest.type || ''}">
-      ${escapeHtml(latest.text || '')}
-      <div class="log-time">${latest.time || ''}</div>
-    </div>`;
+  if (!latest || latest.length === 0) { 
+    container.innerHTML = '<div class="empty-state">Game events will appear here...</div>'; 
+    return; 
+  }
+  container.innerHTML = latest.map(entry => `
+    <div class="log-entry ${entry.type || ''}">
+      ${escapeHtml(entry.text || '')}
+      <div class="log-time">${entry.time || ''}</div>
+    </div>`).join('');
 }
 
 function renderClaimedSets(state) {
@@ -916,13 +989,16 @@ document.getElementById('btn-confirm-claim').addEventListener('click', async () 
 
   const result = processClaim(stateWithHands, myPlayerId, halfSuitId, assignment);
 
+  const gameOver = result.status === 'ended';
   const logKey = push(ref(db, `games/${currentRoomCode}/log`)).key;
   const rootUpdates = {
     [`games/${currentRoomCode}/scores`]: result.scores,
     [`games/${currentRoomCode}/claimedSets`]: result.claimedSets,
-    [`games/${currentRoomCode}/currentTurn`]: result.currentTurn,
     [`games/${currentRoomCode}/status`]: result.status,
     [`games/${currentRoomCode}/log/${logKey}`]: { ...result.log, time: formatTime() },
+    // If game over, commit final turn; otherwise let declarer choose
+    [`games/${currentRoomCode}/currentTurn`]: gameOver ? result.currentTurn : null,
+    [`games/${currentRoomCode}/pendingTurnChoice`]: gameOver ? null : { chooserId: myPlayerId },
   };
   for (const [pid, p] of Object.entries(result.players)) {
     rootUpdates[`games/${currentRoomCode}/players/${pid}/cardCount`] = p.cardCount;
@@ -933,8 +1009,8 @@ document.getElementById('btn-confirm-claim').addEventListener('click', async () 
 
   const { correct, opponentHasCard } = result.claimResult;
   if (opponentHasCard) showToast('Claim failed — opponent had a card!', 'error');
-  else if (correct) showToast('Correct! Your team scores!', 'success');
-  else showToast('Wrong assignment — nullified!', 'error');
+  else if (correct) showToast('Correct! Your team scores! Now choose who plays next.', 'success');
+  else showToast('Wrong assignment — nullified! Now choose who plays next.', 'error');
 });
 
 // ===== ENDED SCREEN =====
