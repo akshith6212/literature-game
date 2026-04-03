@@ -222,7 +222,7 @@ function renderLobby(state) {
   const botControls = document.getElementById('bot-controls');
   const botCount = Object.values(players).filter(p => p.isBot).length;
   botControls.style.display = (isHost && total < 8) ? 'flex' : 'none';
-  document.getElementById('btn-add-bot').disabled = botCount >= 2;
+  document.getElementById('btn-add-bot').disabled = total >= 8;
 }
 
 function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
@@ -295,8 +295,6 @@ document.getElementById('btn-add-bot').addEventListener('click', async () => {
   if (total >= 8) return showToast('Room is full', 'error');
 
   const botCount = Object.values(players).filter(p => p.isBot).length;
-  if (botCount >= 2) return showToast('Maximum 2 bots allowed', 'error');
-
   const levelLabel = level.charAt(0).toUpperCase() + level.slice(1);
   const botName = `Bot ${botCount + 1} (${levelLabel})`;
   const team0 = Object.values(players).filter(p => p.team === 0).length;
@@ -673,12 +671,14 @@ window.passMyTurn = async () => {
 function renderLog(state) {
   const log = state.log || {};
   const entries = Array.isArray(log) ? log : Object.values(log);
+  const latest = entries[entries.length - 1];
   const container = document.getElementById('game-log');
-  container.innerHTML = entries.slice(-50).reverse().map(entry => `
-    <div class="log-entry ${entry.type || ''}">
-      ${escapeHtml(entry.text || '')}
-      <div class="log-time">${entry.time || ''}</div>
-    </div>`).join('');
+  if (!latest) { container.innerHTML = '<div class="empty-state">Game events will appear here...</div>'; return; }
+  container.innerHTML = `
+    <div class="log-entry ${latest.type || ''}">
+      ${escapeHtml(latest.text || '')}
+      <div class="log-time">${latest.time || ''}</div>
+    </div>`;
 }
 
 function renderClaimedSets(state) {
