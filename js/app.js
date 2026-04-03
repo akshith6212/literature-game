@@ -13,7 +13,7 @@ import {
 // ===== FIREBASE SETUP =====
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import {
-  getDatabase, ref, set, get, update, onValue, push, serverTimestamp, off,
+  getDatabase, ref, set, get, update, onValue, push, serverTimestamp, off, runTransaction,
 } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
 import {
   getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut,
@@ -272,45 +272,47 @@ async function leaveGame() {
 
   const code = currentRoomCode;
   const pid = myPlayerId;
-  const state = gameState;
 
-  // If it's our turn mid-game, pass to next player first
-  const updates = {};
-  if (state?.status === 'playing' && state.currentTurn === pid) {
-    const order = (state.playerOrder || []).filter(id => id !== pid);
-    const currentIdx = (state.playerOrder || []).indexOf(pid);
-    let nextTurn = null;
-    for (let i = 0; i < order.length; i++) {
-      const nextId = order[(currentIdx + i) % order.length];
-      if ((gameHands[nextId] || []).length > 0) { nextTurn = nextId; break; }
-    }
-    updates[`games/${code}/currentTurn`] = nextTurn;
-  }
-
-  // Remove player from game and their hand
-  updates[`games/${code}/players/${pid}`] = null;
-  updates[`games/${code}/playerOrder`] = (state?.playerOrder || []).filter(id => id !== pid);
-  updates[`hands/${code}/${pid}`] = null;
-
-  // Log the departure if game is in progress
-  if (state?.status === 'playing') {
-    const logKey = push(ref(db, `games/${code}/log`)).key;
-    updates[`games/${code}/log/${logKey}`] = {
-      type: 'system',
-      text: `${escapeHtml(state.players[pid]?.name || 'A player')} left the game.`,
-      time: formatTime(),
-    };
-  }
-
-  // Detach listeners and navigate immediately — don't wait for Firebase writes
+  // Detach listeners and navigate immediately
   if (gameStateListener) { off(ref(db, `games/${code}`), 'value', gameStateListener); gameStateListener = null; }
   if (handsListener) { off(ref(db, `hands/${code}`), 'value', handsListener); handsListener = null; }
   currentRoomCode = null;
   gameState = null;
   showScreen('home');
 
-  // Fire-and-forget: clean up Firebase in the background
-  update(ref(db, '/'), updates);
+  // Transaction reads the latest server state, so concurrent leaves don't clobber each other
+  runTransaction(ref(db, `games/${code}`), (game) => {
+    if (!game) return game; // room already gone
+    if (!game.players?.[pid]) return game; // already removed
+
+    const playerName = game.players[pid].name || 'A player';
+    delete game.players[pid];
+    game.playerOrder = (game.playerOrder || []).filter(id => id !== pid);
+
+    // Pass the turn if it was ours
+    if (game.currentTurn === pid) {
+      let nextTurn = null;
+      for (const id of game.playerOrder) {
+        if ((game.players[id]?.cardCount || 0) > 0) { nextTurn = id; break; }
+      }
+      game.currentTurn = nextTurn;
+    }
+
+    // Log departure if game was in progress
+    if (game.status === 'playing') {
+      if (!game.log) game.log = {};
+      game.log[Date.now().toString(36)] = {
+        type: 'system',
+        text: `${playerName} left the game.`,
+        time: formatTime(),
+      };
+    }
+
+    return game;
+  });
+
+  // Hand and activeRoom are player-specific paths — safe to write directly
+  set(ref(db, `hands/${code}/${pid}`), null);
   set(ref(db, `users/${pid}/activeRoom`), null);
 }
 
