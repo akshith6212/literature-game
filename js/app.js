@@ -225,13 +225,16 @@ function renderLobby(state) {
   const humanCount = Object.values(players).filter(p => !p.isBot).length;
   const t0 = team0Players.length;
   const t1 = team1Players.length;
-  const canStart = isHost && (total === 6 || total === 8) && t0 === t1 && humanCount >= 1;
+  const humanT0 = team0Players.filter(([, p]) => !p.isBot).length;
+  const humanT1 = team1Players.filter(([, p]) => !p.isBot).length;
+  const canStart = isHost && (total === 6 || total === 8) && t0 === t1 && humanT0 >= 1 && humanT1 >= 1;
 
   const statusEl = document.getElementById('lobby-status');
   if (canStart) {
     statusEl.textContent = 'Ready to start!';
-  } else if (humanCount < 1) {
-    statusEl.textContent = 'At least one real player is required';
+  } else if (humanT0 < 1 || humanT1 < 1) {
+    const which = humanT0 < 1 ? 'Team 1' : 'Team 2';
+    statusEl.textContent = `Each team needs at least one human player (${which} has none)`;
   } else if (t0 !== t1) {
     statusEl.textContent = `${total} players — teams must be equal (${t0} vs ${t1})`;
   } else {
@@ -451,7 +454,7 @@ function scheduleBotTurn(botId) {
   if (scheduledBotId === botId) return; // already scheduled for this bot
   clearBotTurn();
   scheduledBotId = botId;
-  const delay = 1500 + Math.random() * 1000; // 1.5–2.5 s
+  const delay = 30000; // 30 s
   botTurnTimeout = setTimeout(() => {
     botTurnTimeout = null;
     scheduledBotId = null;
