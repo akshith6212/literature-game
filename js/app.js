@@ -142,8 +142,18 @@ function joinRoom(code) {
   if (gameStateListener) off(ref(db, `games/${code}`), 'value', gameStateListener);
   if (handsListener) off(ref(db, `hands/${code}`), 'value', handsListener);
 
-  gameStateListener = onValue(ref(db, `games/${code}`), snapshot => {
-    if (!snapshot.exists()) return;
+  gameStateListener = onValue(ref(db, `games/${code}`), async snapshot => {
+    if (!snapshot.exists()) {
+      // Host deleted the game — send everyone back to home
+      if (currentRoomCode) {
+        showToast('The host ended the game.', 'info');
+        if (myPlayerId) await set(ref(db, `users/${myPlayerId}/activeRoom`), null);
+        currentRoomCode = null;
+        gameState = null;
+        showScreen('home');
+      }
+      return;
+    }
     gameState = snapshot.val();
 
     if (gameState.status === 'lobby') renderLobby(gameState);
@@ -186,6 +196,9 @@ function renderLobby(state) {
   const startBtn = document.getElementById('btn-start-game');
   startBtn.style.display = isHost ? 'block' : 'none';
   startBtn.disabled = !canStart;
+
+  document.getElementById('btn-end-game-lobby').style.display = isHost ? 'block' : 'none';
+  document.getElementById('btn-leave-game-lobby').style.display = !isHost ? 'block' : 'none';
 }
 
 function renderPlayerItems(entries, allPlayers, isHost, myTeam, hostId) {
@@ -243,6 +256,68 @@ document.getElementById('btn-start-game').addEventListener('click', async () => 
   await update(ref(db, '/'), rootUpdates);
 });
 
+async function endGame() {
+  if (!confirm('End and delete this game? All players will be returned to the home screen.')) return;
+  await Promise.all([
+    set(ref(db, `games/${currentRoomCode}`), null),
+    set(ref(db, `hands/${currentRoomCode}`), null),
+  ]);
+  // onValue listener fires with !snapshot.exists() for all clients (including host)
+}
+
+document.getElementById('btn-end-game-lobby').addEventListener('click', endGame);
+document.getElementById('btn-end-game-ingame').addEventListener('click', endGame);
+
+async function leaveGame() {
+  if (!confirm('Leave this game? You will be removed from the room.')) return;
+
+  const code = currentRoomCode;
+  const pid = myPlayerId;
+  const state = gameState;
+
+  // If it's our turn mid-game, pass to next player first
+  const updates = {};
+  if (state?.status === 'playing' && state.currentTurn === pid) {
+    const order = (state.playerOrder || []).filter(id => id !== pid);
+    const currentIdx = (state.playerOrder || []).indexOf(pid);
+    let nextTurn = null;
+    for (let i = 0; i < order.length; i++) {
+      const nextId = order[(currentIdx + i) % order.length];
+      if ((gameHands[nextId] || []).length > 0) { nextTurn = nextId; break; }
+    }
+    updates[`games/${code}/currentTurn`] = nextTurn;
+  }
+
+  // Remove player from game and their hand
+  updates[`games/${code}/players/${pid}`] = null;
+  updates[`games/${code}/playerOrder`] = (state?.playerOrder || []).filter(id => id !== pid);
+  updates[`hands/${code}/${pid}`] = null;
+
+  // Log the departure if game is in progress
+  if (state?.status === 'playing') {
+    const logKey = push(ref(db, `games/${code}/log`)).key;
+    updates[`games/${code}/log/${logKey}`] = {
+      type: 'system',
+      text: `${escapeHtml(state.players[pid]?.name || 'A player')} left the game.`,
+      time: formatTime(),
+    };
+  }
+
+  // Clear local state before writing so the snapshot callback doesn't re-route us
+  currentRoomCode = null;
+  gameState = null;
+
+  await Promise.all([
+    update(ref(db, '/'), updates),
+    set(ref(db, `users/${pid}/activeRoom`), null),
+  ]);
+
+  showScreen('home');
+}
+
+document.getElementById('btn-leave-game-lobby').addEventListener('click', leaveGame);
+document.getElementById('btn-leave-game-ingame').addEventListener('click', leaveGame);
+
 // ===== GAME SCREEN =====
 function renderGame(state) {
   showScreen('game');
@@ -251,7 +326,11 @@ function renderGame(state) {
   if (!me) return;
 
   const isMyTurn = state.currentTurn === myPlayerId;
+  const isHost = state.hostId === myPlayerId;
   const scores = state.scores || [0, 0];
+
+  document.getElementById('btn-end-game-ingame').style.display = isHost ? 'inline-block' : 'none';
+  document.getElementById('btn-leave-game-ingame').style.display = !isHost ? 'inline-block' : 'none';
 
   // Header
   document.getElementById('game-score-0').textContent = scores[0];
